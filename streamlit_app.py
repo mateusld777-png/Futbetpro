@@ -1,4 +1,5 @@
 import math
+import time
 from datetime import datetime, timedelta
 from itertools import combinations
 from zoneinfo import ZoneInfo
@@ -20,6 +21,14 @@ st.set_page_config(
 
 API_URL = "https://v3.football.api-sports.io"
 
+# O Free permite 10 requisições por minuto.
+# Usamos 6,5 segundos entre chamadas para evitar rajadas.
+RATE_LIMIT_INTERVAL = 6.5
+
+# Para não gastar toda a cota de uma vez.
+MAX_JOGOS_ANALISE = 8
+
+
 LEAGUES = {
     "Brasileirão": 71,
     "Premier League": 39,
@@ -35,22 +44,32 @@ LEAGUES = {
 
 
 # ============================================================
-# SENHA DO APLICATIVO
+# SENHA
 # ============================================================
 
-APP_PASSWORD = st.secrets.get("APP_PASSWORD", "")
+APP_PASSWORD = st.secrets.get(
+    "APP_PASSWORD",
+    ""
+)
 
 if not APP_PASSWORD:
+
     st.title("🔐 FUTBET PRO")
-    st.warning("O aplicativo ainda não foi configurado.")
+
+    st.warning(
+        "O aplicativo ainda não foi configurado."
+    )
+
     st.info(
         "No Streamlit, abra os Secrets e adicione:\n\n"
         'APP_PASSWORD = "SUA_SENHA"'
     )
+
     st.stop()
 
 
 if "autenticado" not in st.session_state:
+
     st.session_state.autenticado = False
 
 
@@ -81,28 +100,80 @@ if not st.session_state.autenticado:
         "🔓 ENTRAR",
         use_container_width=True
     ):
+
         if senha == APP_PASSWORD:
+
             st.session_state.autenticado = True
+
             st.rerun()
+
         else:
-            st.error("❌ Senha incorreta.")
+
+            st.error(
+                "❌ Senha incorreta."
+            )
 
     st.stop()
 
 
 # ============================================================
-# API
+# CONTROLE DE VELOCIDADE DA API
 # ============================================================
 
-def api_get(endpoint, params, api_key):
+def controlar_velocidade():
+
+    agora = time.monotonic()
+
+    ultima = st.session_state.get(
+        "ultima_chamada_api",
+        None
+    )
+
+    if ultima is not None:
+
+        decorrido = agora - ultima
+
+        espera = (
+            RATE_LIMIT_INTERVAL
+            - decorrido
+        )
+
+        if espera > 0:
+
+            time.sleep(espera)
+
+    st.session_state.ultima_chamada_api = (
+        time.monotonic()
+    )
+
+
+# ============================================================
+# API GET
+# ============================================================
+
+def api_get(
+    endpoint,
+    params,
+    api_key,
+    tentar_novamente=True
+):
 
     if not api_key:
-        st.error("❌ API-Football Key não configurada.")
+
+        st.error(
+            "❌ API-Football Key não configurada."
+        )
+
         return None
+
+
+    controlar_velocidade()
+
 
     headers = {
         "x-apisports-key": api_key
     }
+
 
     try:
 
@@ -110,25 +181,90 @@ def api_get(endpoint, params, api_key):
             f"{API_URL}/{endpoint}",
             headers=headers,
             params=params,
-            timeout=20
+            timeout=30
         )
 
+
+        # ----------------------------------------------------
+        # RATE LIMIT
+        # ----------------------------------------------------
+
+        if response.status_code == 429:
+
+            if tentar_novamente:
+
+                st.warning(
+                    "⏳ Limite de requisições atingido. "
+                    "Aguardando para continuar..."
+                )
+
+                time.sleep(65)
+
+                st.session_state.ultima_chamada_api = (
+                    time.monotonic()
+                )
+
+                return api_get(
+                    endpoint,
+                    params,
+                    api_key,
+                    tentar_novamente=False
+                )
+
+            st.error(
+                "❌ A API atingiu o limite por minuto. "
+                "Aguarde cerca de 1 minuto e tente novamente."
+            )
+
+            return None
+
+
+        # ----------------------------------------------------
+        # ERRO HTTP
+        # ----------------------------------------------------
+
         if response.status_code != 200:
+
             st.error(
                 f"❌ Erro HTTP {response.status_code}: "
                 f"{response.text[:500]}"
             )
+
             return None
+
 
         data = response.json()
 
-        errors = data.get("errors")
 
-        if errors:
-            st.error(f"❌ Erro da API: {errors}")
+        # ----------------------------------------------------
+        # ERROS DA API
+        # ----------------------------------------------------
+
+        erros = data.get(
+            "errors"
+        )
+
+
+        if erros:
+
+            st.error(
+                f"❌ Erro da API: {erros}"
+            )
+
             return None
 
+
         return data
+
+
+    except requests.exceptions.Timeout:
+
+        st.error(
+            "❌ A API demorou demais para responder."
+        )
+
+        return None
+
 
     except requests.exceptions.RequestException as e:
 
@@ -140,11 +276,15 @@ def api_get(endpoint, params, api_key):
 
 
 # ============================================================
-# BUSCAR JOGOS DO DIA
+# BUSCAR JOGOS DA DATA
 # ============================================================
 
 @st.cache_data(ttl=900)
-def buscar_jogos(data_escolhida, ligas, api_key):
+def buscar_jogos(
+    data_escolhida,
+    ligas,
+    api_key
+):
 
     resultado = api_get(
         "fixtures",
@@ -155,42 +295,62 @@ def buscar_jogos(data_escolhida, ligas, api_key):
         api_key
     )
 
+
     if not resultado:
+
         return []
+
+
+    liga_ids = set(
+        ligas
+    )
+
 
     jogos = []
 
-    ligas_ids = set(ligas)
 
-    for item in resultado.get("response", []):
+    for item in resultado.get(
+        "response",
+        []
+    ):
 
-        liga_id = item.get("league", {}).get("id")
+        liga_id = (
+            item
+            .get("league", {})
+            .get("id")
+        )
+
 
         status = (
-            item.get("fixture", {})
+            item
+            .get("fixture", {})
             .get("status", {})
             .get("short")
         )
 
-        if liga_id in ligas_ids and status in ["NS", "TBD"]:
+
+        if (
+            liga_id in liga_ids
+            and status in ["NS", "TBD"]
+        ):
 
             jogos.append(item)
+
 
     return jogos
 
 
 # ============================================================
-# ÚLTIMOS JOGOS DO TIME
+# BUSCAR HISTÓRICO DA LIGA
 #
-# NÃO USA MAIS last=5
-#
-# Busca um período e depois pega localmente os 5
-# jogos mais recentes.
+# UMA chamada para a liga em vez de uma chamada por time.
+# Isso economiza bastante a cota.
 # ============================================================
 
 @st.cache_data(ttl=1800)
-def buscar_ultimos_jogos(
-    team_id,
+def buscar_historico_liga(
+    league_id,
+    season,
     data_referencia,
     api_key
 ):
@@ -207,19 +367,26 @@ def buscar_ultimos_jogos(
         return []
 
 
-    # Busca aproximadamente os últimos 4 meses
-    data_inicio = data_ref - timedelta(days=120)
+    data_inicio = (
+        data_ref - timedelta(days=120)
+    )
 
-    # Somente jogos anteriores à partida analisada
-    data_fim = data_ref - timedelta(days=1)
+    data_fim = (
+        data_ref - timedelta(days=1)
+    )
 
 
     resultado = api_get(
         "fixtures",
         {
-            "team": team_id,
-            "from": data_inicio.strftime("%Y-%m-%d"),
-            "to": data_fim.strftime("%Y-%m-%d"),
+            "league": league_id,
+            "season": season,
+            "from": data_inicio.strftime(
+                "%Y-%m-%d"
+            ),
+            "to": data_fim.strftime(
+                "%Y-%m-%d"
+            ),
             "timezone": "America/Sao_Paulo"
         },
         api_key
@@ -227,42 +394,108 @@ def buscar_ultimos_jogos(
 
 
     if not resultado:
+
         return []
 
 
     jogos = []
 
 
-    for item in resultado.get("response", []):
+    for item in resultado.get(
+        "response",
+        []
+    ):
 
         status = (
-            item.get("fixture", {})
+            item
+            .get("fixture", {})
             .get("status", {})
             .get("short")
         )
 
-        if status in ["FT", "AET", "PEN"]:
+
+        if status in [
+            "FT",
+            "AET",
+            "PEN"
+        ]:
 
             jogos.append(item)
 
 
-    # Mais recentes primeiro
-    jogos.sort(
-        key=lambda x: x.get(
-            "fixture", {}
-        ).get(
-            "timestamp",
-            0
-        ),
+    return jogos
+
+
+# ============================================================
+# PEGAR ÚLTIMOS 5 JOGOS DO TIME
+# ============================================================
+
+def pegar_ultimos_jogos_time(
+    jogos,
+    team_id,
+    data_referencia
+):
+
+    jogos_time = []
+
+
+    for jogo in jogos:
+
+        data_jogo = (
+            jogo
+            .get("fixture", {})
+            .get("date", "")
+        )
+
+
+        if not data_jogo:
+
+            continue
+
+
+        if data_jogo[:10] >= data_referencia:
+
+            continue
+
+
+        home_id = (
+            jogo
+            .get("teams", {})
+            .get("home", {})
+            .get("id")
+        )
+
+
+        away_id = (
+            jogo
+            .get("teams", {})
+            .get("away", {})
+            .get("id")
+        )
+
+
+        if team_id in [
+            home_id,
+            away_id
+        ]:
+
+            jogos_time.append(jogo)
+
+
+    jogos_time.sort(
+        key=lambda x:
+            x
+            .get("fixture", {})
+            .get("timestamp", 0),
         reverse=True
     )
 
 
-    return jogos[:5]
+    return jogos_time[:5]
 
 
 # ============================================================
-# FORMA DO TIME
+# FORMA
 # ============================================================
 
 def calcular_forma(
@@ -271,6 +504,7 @@ def calcular_forma(
 ):
 
     if not jogos:
+
         return {
             "jogos": 0,
             "vitorias": 0,
@@ -288,8 +522,10 @@ def calcular_forma(
     vitorias = 0
     empates = 0
     derrotas = 0
+
     gols_marcados = 0
     gols_sofridos = 0
+
     pontos = 0
 
     resultados = []
@@ -298,29 +534,40 @@ def calcular_forma(
     for jogo in jogos:
 
         home_id = (
-            jogo.get("teams", {})
+            jogo
+            .get("teams", {})
             .get("home", {})
             .get("id")
         )
 
+
         away_id = (
-            jogo.get("teams", {})
+            jogo
+            .get("teams", {})
             .get("away", {})
             .get("id")
         )
 
+
         gols_home = (
-            jogo.get("goals", {})
+            jogo
+            .get("goals", {})
             .get("home")
         )
 
+
         gols_away = (
-            jogo.get("goals", {})
+            jogo
+            .get("goals", {})
             .get("away")
         )
 
 
-        if gols_home is None or gols_away is None:
+        if (
+            gols_home is None
+            or gols_away is None
+        ):
+
             continue
 
 
@@ -362,9 +609,9 @@ def calcular_forma(
 
 
     total = (
-        vitorias +
-        empates +
-        derrotas
+        vitorias
+        + empates
+        + derrotas
     )
 
 
@@ -398,14 +645,17 @@ def calcular_forma(
 
         "gols_sofridos": gols_sofridos,
 
-        "media_gols": gols_marcados / total,
+        "media_gols":
+            gols_marcados / total,
 
-        "media_sofridos": gols_sofridos / total,
+        "media_sofridos":
+            gols_sofridos / total,
 
-        "pontos": pontos,
+        "pontos":
+            pontos,
 
-        "forma": "".join(resultados)
-
+        "forma":
+            "".join(resultados)
     }
 
 
@@ -439,29 +689,23 @@ def calcular_probabilidades(
     home_win = 0
     draw = 0
     away_win = 0
-
-    over_15 = 0
-
-    max_goals = 10
+    over15 = 0
 
 
-    for gols_home in range(max_goals + 1):
+    for gols_home in range(11):
 
-        for gols_away in range(max_goals + 1):
-
-            prob_home = poisson(
-                gols_home,
-                lambda_home
-            )
-
-            prob_away = poisson(
-                gols_away,
-                lambda_away
-            )
+        for gols_away in range(11):
 
             prob = (
-                prob_home *
-                prob_away
+                poisson(
+                    gols_home,
+                    lambda_home
+                )
+                *
+                poisson(
+                    gols_away,
+                    lambda_away
+                )
             )
 
 
@@ -479,28 +723,36 @@ def calcular_probabilidades(
 
 
             if (
-                gols_home +
-                gols_away
+                gols_home
+                + gols_away
             ) >= 2:
 
-                over_15 += prob
+                over15 += prob
 
 
     return {
 
-        "home": home_win,
+        "home":
+            home_win,
 
-        "draw": draw,
+        "draw":
+            draw,
 
-        "away": away_win,
+        "away":
+            away_win,
 
-        "over15": over_15,
+        "over15":
+            over15,
 
         "home_1plus":
-            1 - math.exp(-lambda_home),
+            1 - math.exp(
+                -lambda_home
+            ),
 
         "away_1plus":
-            1 - math.exp(-lambda_away),
+            1 - math.exp(
+                -lambda_away
+            ),
 
         "1x":
             home_win + draw,
@@ -531,7 +783,9 @@ def buscar_previsao(
         api_key
     )
 
+
     if not resultado:
+
         return None
 
 
@@ -542,6 +796,7 @@ def buscar_previsao(
 
 
     if not resposta:
+
         return None
 
 
@@ -552,7 +807,9 @@ def buscar_previsao(
 # CONVERTER PERCENTUAL
 # ============================================================
 
-def converter_percentual(valor):
+def converter_percentual(
+    valor
+):
 
     try:
 
@@ -562,8 +819,11 @@ def converter_percentual(valor):
             .strip()
         )
 
+
         if valor > 1:
+
             return valor / 100
+
 
         return valor
 
@@ -573,7 +833,7 @@ def converter_percentual(valor):
 
 
 # ============================================================
-# COMBINAR MODELOS
+# COMBINAR MODELO + API
 # ============================================================
 
 def combinar_modelos(
@@ -588,52 +848,71 @@ def combinar_modelos(
 
     try:
 
-        predictions = previsao.get(
-            "predictions",
-            {}
+        predictions = (
+            previsao
+            .get("predictions", {})
         )
 
-        vencedor = predictions.get(
-            "winner",
-            {}
+
+        winner = (
+            predictions
+            .get("winner", {})
         )
 
 
         api_home = converter_percentual(
-            vencedor.get("home")
-        )
-
-        api_away = converter_percentual(
-            vencedor.get("away")
+            winner.get("home")
         )
 
         api_draw = converter_percentual(
-            vencedor.get("draw")
+            winner.get("draw")
+        )
+
+        api_away = converter_percentual(
+            winner.get("away")
         )
 
 
-        if (
-            api_home is None or
-            api_away is None or
-            api_draw is None
+        if any(
+            x is None
+            for x in [
+                api_home,
+                api_draw,
+                api_away
+            ]
         ):
 
             return modelo
 
 
+        home = (
+            modelo["home"] * 0.60
+            + api_home * 0.40
+        )
+
+
+        draw = (
+            modelo["draw"] * 0.60
+            + api_draw * 0.40
+        )
+
+
+        away = (
+            modelo["away"] * 0.60
+            + api_away * 0.40
+        )
+
+
         return {
 
             "home":
-                modelo["home"] * 0.60
-                + api_home * 0.40,
+                home,
 
             "draw":
-                modelo["draw"] * 0.60
-                + api_draw * 0.40,
+                draw,
 
             "away":
-                modelo["away"] * 0.60
-                + api_away * 0.40,
+                away,
 
             "over15":
                 modelo["over15"],
@@ -645,22 +924,13 @@ def combinar_modelos(
                 modelo["away_1plus"],
 
             "1x":
-                modelo["home"] * 0.60
-                + api_home * 0.40
-                + modelo["draw"] * 0.60
-                + api_draw * 0.40,
+                home + draw,
 
             "x2":
-                modelo["draw"] * 0.60
-                + api_draw * 0.40
-                + modelo["away"] * 0.60
-                + api_away * 0.40,
+                draw + away,
 
             "12":
-                modelo["home"] * 0.60
-                + api_home * 0.40
-                + modelo["away"] * 0.60
-                + api_away * 0.40
+                home + away
         }
 
 
@@ -687,7 +957,9 @@ def buscar_odds(
         api_key
     )
 
+
     if not resultado:
+
         return []
 
 
@@ -696,6 +968,10 @@ def buscar_odds(
         []
     )
 
+
+# ============================================================
+# PROCURAR ODD
+# ============================================================
 
 def procurar_odd(
     odds_data,
@@ -710,10 +986,13 @@ def procurar_odd(
 
     for bloco in odds_data:
 
-        bookmakers = bloco.get(
-            "bookmakers",
-            []
+        bookmakers = (
+            bloco.get(
+                "bookmakers",
+                []
+            )
         )
+
 
         for bookmaker in bookmakers:
 
@@ -722,10 +1001,14 @@ def procurar_odd(
                 []
             )
 
+
             for bet in bets:
 
                 bet_name = str(
-                    bet.get("name", "")
+                    bet.get(
+                        "name",
+                        ""
+                    )
                 ).lower()
 
 
@@ -735,7 +1018,10 @@ def procurar_odd(
                 ):
 
                     label = str(
-                        valor.get("value", "")
+                        valor.get(
+                            "value",
+                            ""
+                        )
                     ).lower()
 
 
@@ -754,7 +1040,9 @@ def procurar_odd(
                         try:
 
                             return float(
-                                valor.get("odd")
+                                valor.get(
+                                    "odd"
+                                )
                             )
 
                         except Exception:
@@ -764,6 +1052,10 @@ def procurar_odd(
 
     return None
 
+
+# ============================================================
+# EXTRAIR ODDS
+# ============================================================
 
 def extrair_odds(
     odds_data
@@ -870,46 +1162,54 @@ def escolher_mercado(
     ]
 
 
-    # Primeiro tenta mercados com odd disponível
-    mercados_com_odd = [
-        m for m in mercados
-        if m[2] is not None
+    com_odd = [
+        item
+        for item in mercados
+        if item[2] is not None
     ]
 
 
-    if mercados_com_odd:
+    if com_odd:
 
-        # Busca equilíbrio entre probabilidade e odd
-        mercados_com_odd.sort(
+        com_odd.sort(
             key=lambda x:
-                (x[1] * min(x[2], 3)),
+                x[1] * min(
+                    x[2],
+                    3
+                ),
             reverse=True
         )
 
-        nome, prob, odd = mercados_com_odd[0]
 
-        return {
-            "mercado": nome,
-            "probabilidade": prob,
-            "odd": odd
-        }
+        nome, prob, odd = (
+            com_odd[0]
+        )
 
 
-    # Se não houver odds disponíveis,
-    # mostra o mercado de maior probabilidade.
-    mercados.sort(
-        key=lambda x: x[1],
-        reverse=True
-    )
+    else:
+
+        mercados.sort(
+            key=lambda x:
+                x[1],
+            reverse=True
+        )
 
 
-    nome, prob, odd = mercados[0]
+        nome, prob, odd = (
+            mercados[0]
+        )
 
 
     return {
-        "mercado": nome,
-        "probabilidade": prob,
-        "odd": None
+
+        "mercado":
+            nome,
+
+        "probabilidade":
+            prob,
+
+        "odd":
+            odd
     }
 
 
@@ -925,7 +1225,92 @@ def analisar_jogos(
     resultados = []
 
 
-    for indice, fixture in enumerate(jogos):
+    # --------------------------------------------------------
+    # Primeiro agrupamos os jogos por liga/temporada.
+    # --------------------------------------------------------
+
+    grupos = {}
+
+
+    for fixture in jogos:
+
+        liga_id = (
+            fixture
+            .get("league", {})
+            .get("id")
+        )
+
+
+        season = (
+            fixture
+            .get("league", {})
+            .get("season")
+        )
+
+
+        data_jogo = (
+            fixture
+            .get("fixture", {})
+            .get("date", "")
+        )
+
+
+        chave = (
+            liga_id,
+            season,
+            data_jogo[:10]
+        )
+
+
+        if chave not in grupos:
+
+            grupos[chave] = []
+
+
+        grupos[chave].append(
+            fixture
+        )
+
+
+    # --------------------------------------------------------
+    # Busca o histórico de cada liga apenas UMA vez.
+    # --------------------------------------------------------
+
+    historicos = {}
+
+
+    for chave in grupos:
+
+        liga_id, season, data_ref = chave
+
+
+        historicos[chave] = (
+            buscar_historico_liga(
+                liga_id,
+                season,
+                data_ref,
+                api_key
+            )
+        )
+
+
+    # --------------------------------------------------------
+    # Agora analisa cada partida.
+    # --------------------------------------------------------
+
+    total = len(jogos)
+
+
+    progresso = st.progress(
+        0,
+        text="Preparando análise..."
+    )
+
+
+    for indice, fixture in enumerate(
+        jogos,
+        start=1
+    ):
 
         try:
 
@@ -945,10 +1330,33 @@ def analisar_jogos(
 
             data_referencia = (
                 data_jogo[:10]
-                if data_jogo
-                else datetime.now(
-                    ZoneInfo("America/Sao_Paulo")
-                ).strftime("%Y-%m-%d")
+            )
+
+
+            liga_id = (
+                fixture
+                .get("league", {})
+                .get("id")
+            )
+
+
+            season = (
+                fixture
+                .get("league", {})
+                .get("season")
+            )
+
+
+            chave = (
+                liga_id,
+                season,
+                data_referencia
+            )
+
+
+            historico = historicos.get(
+                chave,
+                []
             )
 
 
@@ -958,6 +1366,7 @@ def analisar_jogos(
                 .get("home", {})
             )
 
+
             away = (
                 fixture
                 .get("teams", {})
@@ -965,8 +1374,13 @@ def analisar_jogos(
             )
 
 
-            home_id = home.get("id")
-            away_id = away.get("id")
+            home_id = home.get(
+                "id"
+            )
+
+            away_id = away.get(
+                "id"
+            )
 
 
             home_name = home.get(
@@ -974,26 +1388,32 @@ def analisar_jogos(
                 "Mandante"
             )
 
+
             away_name = away.get(
                 "name",
                 "Visitante"
             )
 
 
-            # ----------------------------------------
-            # ÚLTIMOS 5 JOGOS
-            # ----------------------------------------
+            # ------------------------------------------------
+            # ÚLTIMOS 5 DE CADA TIME
+            # ------------------------------------------------
 
-            ultimos_home = buscar_ultimos_jogos(
-                home_id,
-                data_referencia,
-                api_key
+            ultimos_home = (
+                pegar_ultimos_jogos_time(
+                    historico,
+                    home_id,
+                    data_referencia
+                )
             )
 
-            ultimos_away = buscar_ultimos_jogos(
-                away_id,
-                data_referencia,
-                api_key
+
+            ultimos_away = (
+                pegar_ultimos_jogos_time(
+                    historico,
+                    away_id,
+                    data_referencia
+                )
             )
 
 
@@ -1002,15 +1422,16 @@ def analisar_jogos(
                 home_id
             )
 
+
             forma_away = calcular_forma(
                 ultimos_away,
                 away_id
             )
 
 
-            # ----------------------------------------
+            # ------------------------------------------------
             # MÉDIAS
-            # ----------------------------------------
+            # ------------------------------------------------
 
             media_home_marcados = (
                 forma_home["media_gols"]
@@ -1018,17 +1439,20 @@ def analisar_jogos(
                 else 1.2
             )
 
+
             media_home_sofridos = (
                 forma_home["media_sofridos"]
                 if forma_home["jogos"] > 0
                 else 1.2
             )
 
+
             media_away_marcados = (
                 forma_away["media_gols"]
                 if forma_away["jogos"] > 0
                 else 1.0
             )
+
 
             media_away_sofridos = (
                 forma_away["media_sofridos"]
@@ -1037,14 +1461,15 @@ def analisar_jogos(
             )
 
 
-            # ----------------------------------------
-            # MODELO DE GOLS
-            # ----------------------------------------
+            # ------------------------------------------------
+            # MODELO
+            # ------------------------------------------------
 
             lambda_home = (
                 media_home_marcados * 0.60
                 + media_away_sofridos * 0.40
             )
+
 
             lambda_away = (
                 media_away_marcados * 0.60
@@ -1052,19 +1477,21 @@ def analisar_jogos(
             )
 
 
-            # Pequeno ajuste de mando
+            # Vantagem de mando
             lambda_home *= 1.08
 
 
-            probabilidades = calcular_probabilidades(
-                lambda_home,
-                lambda_away
+            probabilidades = (
+                calcular_probabilidades(
+                    lambda_home,
+                    lambda_away
+                )
             )
 
 
-            # ----------------------------------------
+            # ------------------------------------------------
             # PREVISÃO DA API
-            # ----------------------------------------
+            # ------------------------------------------------
 
             previsao = buscar_previsao(
                 fixture_id,
@@ -1072,15 +1499,17 @@ def analisar_jogos(
             )
 
 
-            probabilidades = combinar_modelos(
-                probabilidades,
-                previsao
+            probabilidades = (
+                combinar_modelos(
+                    probabilidades,
+                    previsao
+                )
             )
 
 
-            # ----------------------------------------
+            # ------------------------------------------------
             # ODDS
-            # ----------------------------------------
+            # ------------------------------------------------
 
             odds_raw = buscar_odds(
                 fixture_id,
@@ -1093,34 +1522,31 @@ def analisar_jogos(
             )
 
 
+            # ------------------------------------------------
+            # MERCADO
+            # ------------------------------------------------
+
             mercado = escolher_mercado(
                 probabilidades,
                 odds
             )
 
 
-            # ----------------------------------------
-            # SCORE DE CONFIANÇA
-            # ----------------------------------------
-
-            melhor_probabilidade = (
-                mercado["probabilidade"]
-            )
-
-
             confianca = (
-                melhor_probabilidade * 100
+                mercado["probabilidade"]
+                * 100
             )
 
 
-            # Penaliza quando há pouca forma
-            total_jogos_forma = (
+            # Penaliza pouca amostra
+            total_forma = (
                 forma_home["jogos"]
                 + forma_away["jogos"]
             )
 
 
-            if total_jogos_forma < 6:
+            if total_forma < 6:
+
                 confianca *= 0.90
 
 
@@ -1179,24 +1605,41 @@ def analisar_jogos(
         except Exception as e:
 
             st.warning(
-                f"⚠️ Não foi possível analisar "
-                f"um dos jogos: {e}"
+                f"⚠️ Erro ao analisar "
+                f"{fixture_id}: {e}"
             )
+
+
+        progresso.progress(
+            indice / total,
+            text=(
+                f"🧠 Analisando "
+                f"{indice}/{total} jogos..."
+            )
+        )
+
+
+    progresso.empty()
 
 
     return resultados
 
 
 # ============================================================
-# OPÇÕES PARA MÚLTIPLAS
+# OPÇÕES PARA MÚLTIPLA
 # ============================================================
 
 def opcoes_do_jogo(
     resultado
 ):
 
-    p = resultado["probabilidades"]
-    odds = resultado["odds"]
+    p = resultado[
+        "probabilidades"
+    ]
+
+    odds = resultado[
+        "odds"
+    ]
 
 
     opcoes = []
@@ -1244,10 +1687,12 @@ def opcoes_do_jogo(
         if odd <= 1:
             continue
 
+
         opcoes.append({
 
             "jogo":
-                f"{resultado['home']} x {resultado['away']}",
+                f"{resultado['home']} x "
+                f"{resultado['away']}",
 
             "mercado":
                 nome,
@@ -1267,20 +1712,22 @@ def opcoes_do_jogo(
 
 
 # ============================================================
-# ODDS DA MÚLTIPLA
+# ODD DA MÚLTIPLA
 # ============================================================
 
 def odd_multipla(
     selecoes
 ):
 
-    resultado = 1.0
+    total = 1.0
+
 
     for selecao in selecoes:
 
-        resultado *= selecao["odd"]
+        total *= selecao["odd"]
 
-    return resultado
+
+    return total
 
 
 # ============================================================
@@ -1291,13 +1738,15 @@ def prob_multipla(
     selecoes
 ):
 
-    resultado = 1.0
+    total = 1.0
+
 
     for selecao in selecoes:
 
-        resultado *= selecao["prob"]
+        total *= selecao["prob"]
 
-    return resultado
+
+    return total
 
 
 # ============================================================
@@ -1315,19 +1764,21 @@ def montar_multipla(
 
     for resultado in resultados:
 
-        jogo_opcoes = opcoes_do_jogo(
-            resultado
+        jogo_opcoes = (
+            opcoes_do_jogo(
+                resultado
+            )
         )
+
 
         if jogo_opcoes:
 
-            # Pega somente a melhor opção
-            # de cada jogo para reduzir combinações.
             jogo_opcoes.sort(
                 key=lambda x:
                     x["prob"],
                 reverse=True
             )
+
 
             opcoes.append(
                 jogo_opcoes[0]
@@ -1335,11 +1786,11 @@ def montar_multipla(
 
 
     if len(opcoes) < 2:
-        return []
+
+        return None
 
 
-    opcoes = sorted(
-        opcoes,
+    opcoes.sort(
         key=lambda x:
             x["prob"],
         reverse=True
@@ -1350,10 +1801,13 @@ def montar_multipla(
 
 
     melhor = None
-    melhor_distancia = float("inf")
+
+    melhor_distancia = float(
+        "inf"
+    )
 
 
-    limite_jogos = min(
+    limite = min(
         len(opcoes),
         8
     )
@@ -1361,7 +1815,7 @@ def montar_multipla(
 
     for tamanho in range(
         2,
-        limite_jogos + 1
+        limite + 1
     ):
 
         for combinacao in combinations(
@@ -1369,12 +1823,17 @@ def montar_multipla(
             tamanho
         ):
 
-            odd_total = odd_multipla(
-                combinacao
+            odd_total = (
+                odd_multipla(
+                    combinacao
+                )
             )
 
-            prob_total = prob_multipla(
-                combinacao
+
+            prob_total = (
+                prob_multipla(
+                    combinacao
+                )
             )
 
 
@@ -1382,15 +1841,14 @@ def montar_multipla(
                 continue
 
 
+            if prob_total < 0.01:
+                continue
+
+
             distancia = abs(
                 math.log(odd_total)
                 - math.log(alvo_odd)
             )
-
-
-            # Evita múltiplas muito improváveis
-            if prob_total < 0.01:
-                continue
 
 
             if distancia < melhor_distancia:
@@ -1407,7 +1865,6 @@ def montar_multipla(
 
                     "probabilidade":
                         prob_total
-
                 }
 
 
@@ -1418,7 +1875,9 @@ def montar_multipla(
 # TÍTULO
 # ============================================================
 
-st.title("⚽ FUTBET PRO")
+st.title(
+    "⚽ FUTBET PRO"
+)
 
 st.caption(
     "Análise automática de jogos, mercados e múltiplas"
@@ -1431,7 +1890,9 @@ st.caption(
 
 with st.sidebar:
 
-    st.header("⚙️ CONFIGURAÇÕES")
+    st.header(
+        "⚙️ CONFIGURAÇÕES"
+    )
 
 
     api_key = st.secrets.get(
@@ -1444,8 +1905,7 @@ with st.sidebar:
 
         api_key = st.text_input(
             "🔑 API-Football Key",
-            type="password",
-            help="Sua chave da API-Football"
+            type="password"
         )
 
 
@@ -1455,14 +1915,18 @@ with st.sidebar:
     data_escolhida = st.date_input(
         "📅 Data dos jogos",
         value=datetime.now(
-            ZoneInfo("America/Sao_Paulo")
+            ZoneInfo(
+                "America/Sao_Paulo"
+            )
         ).date()
     )
 
 
     ligas_selecionadas = st.multiselect(
         "🏆 Competições",
-        options=list(LEAGUES.keys()),
+        options=list(
+            LEAGUES.keys()
+        ),
         default=[
             "Brasileirão",
             "Premier League",
@@ -1493,11 +1957,12 @@ with st.sidebar:
     ):
 
         st.session_state.autenticado = False
+
         st.rerun()
 
 
 # ============================================================
-# BUSCA
+# BUSCAR
 # ============================================================
 
 if buscar:
@@ -1540,6 +2005,12 @@ if buscar:
 
 
     st.session_state.jogos = jogos
+
+    # Limpa análises antigas
+    st.session_state.pop(
+        "resultados",
+        None
+    )
 
 
 # ============================================================
@@ -1587,7 +2058,6 @@ if jogos:
                 jogo
                 .get("fixture", {})
                 .get("date", "")[11:16]
-
         })
 
 
@@ -1598,19 +2068,32 @@ if jogos:
     )
 
 
+    st.info(
+        f"ℹ️ O sistema analisará no máximo "
+        f"{MAX_JOGOS_ANALISE} jogos por vez para "
+        f"preservar a cota da API gratuita."
+    )
+
+
     if st.button(
         "🧠 ANALISAR TODOS OS JOGOS",
         use_container_width=True
     ):
 
-        # O plano Free tem 100 requisições/dia.
-        # Para evitar gastar a cota inteira de uma vez,
-        # limitamos a análise inicial a 20 jogos.
-        jogos_para_analisar = jogos[:20]
+        jogos_para_analisar = (
+            jogos[:MAX_JOGOS_ANALISE]
+        )
+
+
+        # Evita análise duplicada
+        st.session_state.pop(
+            "resultados",
+            None
+        )
 
 
         with st.spinner(
-            "🧠 Analisando forma, previsões e mercados..."
+            "🧠 Preparando análise..."
         ):
 
             resultados = analisar_jogos(
@@ -1619,7 +2102,9 @@ if jogos:
             )
 
 
-        st.session_state.resultados = resultados
+        st.session_state.resultados = (
+            resultados
+        )
 
 
 # ============================================================
@@ -1663,7 +2148,8 @@ if resultados:
                 i,
 
             "Jogo":
-                f"{resultado['home']} x {resultado['away']}",
+                f"{resultado['home']} x "
+                f"{resultado['away']}",
 
             "Mercado":
                 resultado["mercado"],
@@ -1680,7 +2166,6 @@ if resultados:
 
             "Confiança":
                 f"{resultado['confianca']:.1f}%"
-
         })
 
 
@@ -1692,7 +2177,7 @@ if resultados:
 
 
     # ========================================================
-    # ANÁLISE DETALHADA
+    # DETALHES
     # ========================================================
 
     st.divider()
@@ -1705,7 +2190,8 @@ if resultados:
     for resultado in resultados_ordenados:
 
         with st.expander(
-            f"⚽ {resultado['home']} x {resultado['away']}"
+            f"⚽ {resultado['home']} x "
+            f"{resultado['away']}"
         ):
 
             col1, col2 = st.columns(2)
@@ -1717,29 +2203,41 @@ if resultados:
                     resultado["home"]
                 )
 
+
                 forma = resultado[
                     "forma_home"
                 ]
 
-                st.write(
-                    f"Últimos jogos: {forma['jogos']}"
-                )
 
                 st.write(
-                    f"Forma: {forma['forma'] or '-'}"
+                    f"Últimos jogos: "
+                    f"{forma['jogos']}"
                 )
 
-                st.write(
-                    f"Vitórias: {forma['vitorias']}"
-                )
 
                 st.write(
-                    f"Empates: {forma['empates']}"
+                    f"Forma: "
+                    f"{forma['forma'] or '-'}"
                 )
 
+
                 st.write(
-                    f"Derrotas: {forma['derrotas']}"
+                    f"Vitórias: "
+                    f"{forma['vitorias']}"
                 )
+
+
+                st.write(
+                    f"Empates: "
+                    f"{forma['empates']}"
+                )
+
+
+                st.write(
+                    f"Derrotas: "
+                    f"{forma['derrotas']}"
+                )
+
 
                 st.write(
                     f"Média de gols: "
@@ -1753,29 +2251,41 @@ if resultados:
                     resultado["away"]
                 )
 
+
                 forma = resultado[
                     "forma_away"
                 ]
 
-                st.write(
-                    f"Últimos jogos: {forma['jogos']}"
-                )
 
                 st.write(
-                    f"Forma: {forma['forma'] or '-'}"
+                    f"Últimos jogos: "
+                    f"{forma['jogos']}"
                 )
 
-                st.write(
-                    f"Vitórias: {forma['vitorias']}"
-                )
 
                 st.write(
-                    f"Empates: {forma['empates']}"
+                    f"Forma: "
+                    f"{forma['forma'] or '-'}"
                 )
 
+
                 st.write(
-                    f"Derrotas: {forma['derrotas']}"
+                    f"Vitórias: "
+                    f"{forma['vitorias']}"
                 )
+
+
+                st.write(
+                    f"Empates: "
+                    f"{forma['empates']}"
+                )
+
+
+                st.write(
+                    f"Derrotas: "
+                    f"{forma['derrotas']}"
+                )
+
 
                 st.write(
                     f"Média de gols: "
@@ -1817,6 +2327,7 @@ if resultados:
                     "Visitante marcar 1+"
                 ],
 
+
                 "Probabilidade": [
 
                     f"{p['home'] * 100:.1f}%",
@@ -1835,7 +2346,6 @@ if resultados:
 
                     f"{p['away_1plus'] * 100:.1f}%"
                 ]
-
             })
 
 
@@ -1850,7 +2360,7 @@ if resultados:
 
 
             st.subheader(
-                "🎯 Mercado escolhido pelo sistema"
+                "🎯 Mercado escolhido"
             )
 
 
@@ -1917,20 +2427,19 @@ if resultados:
             "🟢 Conservadora"
         )
 
+
         if st.button(
             "Montar odd ~5",
             key="odd5",
             use_container_width=True
         ):
 
-            multipla = montar_multipla(
+            st.session_state[
+                "multipla5"
+            ] = montar_multipla(
                 resultados,
                 5
             )
-
-            st.session_state[
-                "multipla5"
-            ] = multipla
 
 
     with col2:
@@ -1939,20 +2448,19 @@ if resultados:
             "🟡 Moderada"
         )
 
+
         if st.button(
             "Montar odd ~10",
             key="odd10",
             use_container_width=True
         ):
 
-            multipla = montar_multipla(
+            st.session_state[
+                "multipla10"
+            ] = montar_multipla(
                 resultados,
                 10
             )
-
-            st.session_state[
-                "multipla10"
-            ] = multipla
 
 
     with col3:
@@ -1961,20 +2469,19 @@ if resultados:
             "🔴 Agressiva"
         )
 
+
         if st.button(
             "Montar odd ~50",
             key="odd50",
             use_container_width=True
         ):
 
-            multipla = montar_multipla(
+            st.session_state[
+                "multipla50"
+            ] = montar_multipla(
                 resultados,
                 50
             )
-
-            st.session_state[
-                "multipla50"
-            ] = multipla
 
 
     # ========================================================
@@ -1982,9 +2489,22 @@ if resultados:
     # ========================================================
 
     for chave, titulo in [
-        ("multipla5", "🟢 Múltipla ~5"),
-        ("multipla10", "🟡 Múltipla ~10"),
-        ("multipla50", "🔴 Múltipla ~50")
+
+        (
+            "multipla5",
+            "🟢 Múltipla ~5"
+        ),
+
+        (
+            "multipla10",
+            "🟡 Múltipla ~10"
+        ),
+
+        (
+            "multipla50",
+            "🔴 Múltipla ~50"
+        )
+
     ]:
 
         multipla = st.session_state.get(
@@ -2007,11 +2527,13 @@ if resultados:
                     f"⚽ **{selecao['jogo']}**"
                 )
 
+
                 st.write(
                     f"Mercado: "
                     f"{selecao['mercado']} | "
                     f"Odd: {selecao['odd']:.2f} | "
-                    f"Prob.: {selecao['prob'] * 100:.1f}%"
+                    f"Prob.: "
+                    f"{selecao['prob'] * 100:.1f}%"
                 )
 
 
@@ -2038,10 +2560,10 @@ if resultados:
 
 
 # ============================================================
-# AVISO
+# RODAPÉ
 # ============================================================
 
 st.caption(
-    "⚠️ As probabilidades são estimativas estatísticas, "
-    "não garantias de resultado."
+    "⚠️ As probabilidades são estimativas estatísticas "
+    "e não garantem resultados."
 )
