@@ -1,43 +1,63 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
-from zoneinfo import ZoneInfo
 
 st.set_page_config(page_title="FUTBET PRO", page_icon="⚽", layout="wide")
 
-# SENHA (mantém a mesma)
+# --- SENHA ---
 if "autenticado" not in st.session_state:
     st.session_state.autenticado = False
 if not st.session_state.autenticado:
     st.title("⚽ FUTBET PRO")
-    senha = st.text_input("Digite a senha:", type="password")
+    senha = st.text_input("Senha:", type="password")
     if st.button("🔐 ENTRAR", use_container_width=True):
-        if senha == st.secrets.get("APP_PASSWORD", ""):
+        if senha == st.secrets.get("APP_PASSWORD",""):
             st.session_state.autenticado = True
             st.rerun()
         else:
-            st.error("Senha incorreta.")
+            st.error("Senha incorreta")
     st.stop()
 
+# --- BANCO DE JOGOS (fica na memória) ---
+if "jogos" not in st.session_state:
+    st.session_state.jogos = [
+        {"horario": "16:00", "liga": "🇧🇷 Brasileirão", "home": "Vasco", "away": "Bahia", "mercado": "Over 1.5", "prob": 74.0, "odd": 1.32, "conf": 88},
+        {"horario": "18:30", "liga": "🇧🇷 Brasileirão", "home": "Corinthians", "away": "Fluminense", "mercado": "1X", "prob": 69.0, "odd": 1.40, "conf": 80},
+    ]
+
 st.title("⚽ FUTBET PRO")
-st.caption("Análise estatística - modo offline (sem API)")
+st.caption("Modo Profissional - sem API, sem suspensão")
 
-# JOGOS DE HOJE - tu edita aqui manualmente, sem precisar de API
-jogos_hoje = [
-    {"horario": "15:00", "liga": "🇧🇷 Brasileirão", "home": "Flamengo", "away": "Palmeiras", "mercado": "Over 1.5", "prob": 72.5, "odd": 1.35, "conf": 85},
-    {"horario": "15:45", "liga": "🏴 Premier League", "home": "Man City", "away": "Arsenal", "mercado": "1X", "prob": 68.3, "odd": 1.42, "conf": 82},
-    {"horario": "16:00", "liga": "🇪🇸 La Liga", "home": "Real Madrid", "away": "Barcelona", "mercado": "BTTS", "prob": 65.1, "odd": 1.75, "conf": 78},
-]
+# --- EDITOR LATERAL ---
+st.sidebar.header("✏️ Editar Jogos")
+with st.sidebar.form("add_jogo"):
+    horario = st.text_input("Horário", "20:00")
+    liga = st.selectbox("Liga", ["🇧🇷 Brasileirão", "🏴 Premier League", "🇪🇸 La Liga", "🇮🇹 Serie A", "🇩🇪 Bundesliga", "🏆 Champions"])
+    home = st.text_input("Mandante", "Flamengo")
+    away = st.text_input("Visitante", "Palmeiras")
+    mercado = st.selectbox("Mercado", ["Over 1.5", "Over 2.5", "1X", "X2", "BTTS Sim", "Casa vence", "Fora vence"])
+    odd = st.number_input("Odd", 1.10, 10.0, 1.40, 0.01)
+    prob = st.number_input("Prob %", 0.0, 100.0, 70.0, 0.5)
+    conf = st.number_input("Confiança %", 0.0, 100.0, 80.0, 1.0)
+    if st.form_submit_button("➕ Adicionar Jogo", use_container_width=True):
+        st.session_state.jogos.append({
+            "horario": horario, "liga": liga, "home": home, "away": away,
+            "mercado": mercado, "prob": prob, "odd": odd, "conf": conf
+        })
+        st.success("Adicionado!")
 
-df = pd.DataFrame(jogos_hoje)
-st.subheader(f"⚽ Jogos hoje: {len(jogos_hoje)}")
-st.dataframe(df, use_container_width=True, hide_index=True)
+if st.sidebar.button("🗑️ Limpar Tudo"):
+    st.session_state.jogos = []
+    st.rerun()
 
-st.divider()
-st.subheader("🎯 Múltiplas")
-c1,c2,c3 = st.columns(3)
-odd2 = jogos_hoje[0]["odd"] * jogos_hoje[1]["odd"]
-odd3 = odd2 * jogos_hoje[2]["odd"]
-c1.metric("Múltipla 2", f"{odd2:.2f}x")
-c2.metric("Múltipla 3", f"{odd3:.2f}x")
-c3.metric("Múltipla 4", "Em breve")
+# --- LISTA ---
+st.subheader(f"⚽ Jogos hoje: {len(st.session_state.jogos)}")
+if not st.session_state.jogos:
+    st.info("Nenhum jogo. Adiciona ali na lateral 👈")
+else:
+    df = pd.DataFrame(st.session_state.jogos)
+    df["Jogo"] = df["home"] + " x " + df["away"]
+    st.dataframe(df[["horario","liga","Jogo","mercado","prob","odd","conf"]], use_container_width=True, hide_index=True)
+
+    st.divider()
+    st.subheader("🎯 Múltiplas")
+    c1,c2,c3
