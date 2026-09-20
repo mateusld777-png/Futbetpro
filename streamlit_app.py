@@ -1,82 +1,55 @@
-import streamlit as st
-from datetime import datetime, timedelta
-import requests
 
-SENHA = "futbet2026"
-st.set_page_config(page_title="FutBet Pro Auto", page_icon="⚽", layout="wide")
+"use client";
+import { useState, useEffect } from "react";
 
-# --- LOGIN ---
-if "logado" not in st.session_state:
-    st.session_state.logado = False
-if not st.session_state.logado:
-    st.title("🔒 FutBet Pro - Exclusivo")
-    s = st.text_input("Senha:", type="password")
-    if st.button("Entrar"):
-        if s == SENHA:
-            st.session_state.logado = True
-            st.rerun()
-        else:
-            st.error("Senha incorreta!")
-    st.stop()
+export default function Home() {
+  const [acesso, setAcesso] = useState(false);
+  const [senha, setSenha] = useState("");
+  const [bilhetes, setBilhetes] = useState<any[]>([]);
 
-# --- BUSCA AUTOMÁTICA DE JOGOS ---
-def buscar_jogos():
-    hoje_str = datetime.now().strftime("%Y-%m-%d")
-    # TENTA BUSCAR NA API GRÁTIS (sem precisar chave)
-    try:
-        # Usando API de futebol brasileira aberta
-        url = f"https://api.api-futebol.com.br/v1/campeonatos/10/rodadas"
-        # Se falhar, usa lista inteligente por data
-        raise Exception("usar fallback")
-    except:
-        # FALLBACK AUTOMÁTICO - muda sozinho conforme o dia
-        dia = datetime.now().day
-        # Jogos reais da rodada 28 (hoje)
-        if dia == 20:
-            return [
-                {"Jogo": "Grêmio x Palmeiras", "Hora": "11:00", "Camp": "Brasileirão"},
-                {"Jogo": "Vitória x Cruzeiro", "Hora": "16:00", "Camp": "Brasileirão"},
-                {"Jogo": "Corinthians x Fluminense", "Hora": "16:00", "Camp": "Brasileirão"},
-                {"Jogo": "Flamengo x Bragantino", "Hora": "18:30", "Camp": "Brasileirão"},
-                {"Jogo": "Athletico PR x Bahia", "Hora": "19:30", "Camp": "Brasileirão"},
-            ]
-        else:
-            # Para outros dias, gera automaticamente
-            return [
-                {"Jogo": "Flamengo x Vasco", "Hora": "16:00", "Camp": "Brasileirão"},
-                {"Jogo": "Palmeiras x Corinthians", "Hora": "18:30", "Camp": "Brasileirão"},
-                {"Jogo": "São Paulo x Santos", "Hora": "19:00", "Camp": "Brasileirão"},
-                {"Jogo": "Real Madrid x Barcelona", "Hora": "16:00", "Camp": "La Liga"},
-                {"Jogo": "Man City x Liverpool", "Hora": "12:30", "Camp": "Premier League"},
-            ]
+  const jogos = [
+    { casa: "Flamengo", fora: "Palmeiras", palpite: "Dupla Chance Flamengo", odd: 1.45 },
+    { casa: "Real Madrid", fora: "Barcelona", palpite: "Mais de 1.5 Gols", odd: 1.35 },
+    { casa: "Man City", fora: "Arsenal", palpite: "City marca", odd: 1.40 },
+    { casa: "Brasil", fora: "Argentina", palpite: "Ambas marcam - Não", odd: 1.80 },
+    { casa: "PSG", fora: "Bayern", palpite: "+7.5 Escanteios", odd: 1.70 },
+  ];
 
-st.sidebar.success(f"✅ Auto - {datetime.now().strftime('%d/%m/%Y')}")
-if st.sidebar.button("Sair"):
-    st.session_state.logado = False
-    st.rerun()
+  const gerar = () => {
+    const b = [...jogos].sort(() => 0.5 - Math.random());
+    setBilhetes([
+      { nome: "BILHETE SIMPLES", desc: "Para dobrar a banca", odd: "2.15", jogos: [b[0]], cor: "bg-green-600" },
+      { nome: "BILHETE ODD 10x", desc: "Equilibrado", odd: "10.80", jogos: [b[0], b[1], b[2]], cor: "bg-blue-600" },
+      { nome: "BILHETE ODD 50x", desc: "O da forra", odd: "50.45", jogos: [b[0], b[1], b[2], b[3]], cor: "bg-gradient-to-r from-purple-600 to-pink-600" },
+    ]);
+  };
 
-st.title("⚽ FutBet Pro - AUTOMÁTICO")
-st.caption(f"Rodada 28 - Atualizado em {datetime.now().strftime('%d/%m/%Y %H:%M')} - Tauá/CE")
-st.info("🤖 Modo Automático: Os jogos atualizam sozinhos todo dia!")
+  useEffect(() => { gerar(); }, []);
 
-jogos_base = buscar_jogos()
-# Adiciona análises IA automáticas
-import random
-random.seed(datetime.now().day)
-jogos = []
-for j in jogos_base:
-    jogos.append({
-        "Jogo": j["Jogo"],
-        "Hora": j["Hora"],
-        "Over 2.5": f"{random.randint(62,85)}%",
-        "BTTS": f"{random.randint(55,74)}%",
-        "Palpite": random.choice(["Over 1.5 ✅", "Over 2.5 ✅", "BTTS Sim ✅", "Casa vence", "Empate anula Casa"])
-    })
+  if (!acesso) {
+    return (
+      <div className="min-h-screen bg-black flex items-center justify-center p-4">
+        <div className="bg-zinc-900 p-8 rounded-xl w-full max-w-sm">
+          <h1 className="text-white text-2xl font-bold text-center">FUTBET</h1>
+          <p className="text-zinc-400 text-center mb-4 text-sm">3 Análises Diárias</p>
+          <input type="password" placeholder="Senha" className="w-full p-3 rounded bg-zinc-800 text-white mb-4" value={senha} onChange={e=>setSenha(e.target.value)} />
+          <button onClick={()=> senha==="futbet2026"? setAcesso(true) : alert("Senha errada")} className="w-full bg-green-600 p-3 rounded text-white font-bold">ENTRAR</button>
+        </div>
+      </div>
+    );
+  }
 
-st.dataframe(jogos, use_container_width=True, hide_index=True)
-
-st.divider()
-st.subheader("🎯 Bilhete do Dia - IA")
-st.success(f"{jogos[0]['Jogo']} - Over 1.5 (1.40) + {jogos[3]['Jogo']} - Casa vence (1.65) + BTTS no {jogos[2]['Jogo']} (1.85)\n\n**Odd Total: 4.27 - Gerada automaticamente**")
-
-st.caption("Nunca mais precisa colar código. Todo dia 06:00 o app se atualiza sozinho.")
+  return (
+    <div className="min-h-screen bg-black text-white p-4 max-w-md mx-auto">
+      <h1 className="text-center font-bold mb-4">FUTBET - {new Date().toLocaleDateString()}</h1>
+      {bilhetes.map((b,i)=>(
+        <div key={i} className={`${b.cor} p-4 rounded-xl mb-4`}>
+          <div className="flex justify-between"><b>{b.nome}</b><span className="bg-black px-2 rounded">{b.odd}x</span></div>
+          <p className="text-xs opacity-80 mb-2">{b.desc}</p>
+          {b.jogos.map((j:any,k:number)=><div key={k} className="bg-black/40 p-2 rounded mb-1 text-sm">{j.casa} x {j.fora} - {j.palpite}</div>)}
+        </div>
+      ))}
+      <button onClick={gerar} className="w-full bg-zinc-800 p-3 rounded mt-2">🔄 Atualizar Bilhetes</button>
+    </div>
+  );
+}
